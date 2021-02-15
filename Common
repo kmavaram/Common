@@ -1,1 +1,162 @@
-
+#!groovy
+@Library('step-jenkins-shared-library')_
+def dataBasePort
+def dataBaseName
+pipeline {
+    agent {
+        label 'windows-tosca-db-worker'
+    }
+    options {
+        ansiColor('xterm')
+    }
+    parameters {
+        choice(choices: ['Bravo', 'Delta', 'Golf', 'Alfa'], description: 'Please pick the Database you\'d like the be connected to the Lol Classic Client', name: 'DbName')
+        booleanParam(defaultValue: false, description: 'Setup for first run', name: 'FIRST_RUN')
+        choice(choices: ['3_22', '3_23'], description: 'Pick the Test Event number to execute' , name: 'TestEventNumber')
+    }
+    environment {
+        SLACK_TOKEN = getSlackToken()
+        dbHost="144.66.238.26"
+    }
+    stages {
+        stage('Map The Lol Database to user choice') {
+            steps {
+                script {
+                    switch(params.DbName) {
+                        case 'Bravo':
+                            dataBaseName = "bravo";
+                            dataBasePort = "12504";
+                        case 'Delta':
+                            dataBaseName = "delta";
+                            dataBasePort = "12507";
+                        case 'Golf':
+                            dataBaseName = "golf";
+                            dataBasePort = "12506";
+                        case 'Alfa':
+                            dataBaseName = "alfa";
+                            dataBasePort = "12509";
+                    }
+                    switch(params.TestEventNumber) {
+                        case '3_22':
+                            FileName = "EC2-DMAUTOREG-HP_3_22.xml";
+                        case '3_23':
+                            FileName = "EC2-DMAUTOREG-HP_3_23.xml";
+                    }
+                }
+            }
+        }
+        stage('First Run') {
+            when { expression { params.FIRST_RUN == true } }
+            steps {
+                script {
+                    powershell """
+                    echo "deleting route"
+                    route delete '169.254.169.254'
+                    aws s3 cp s3://landonline-classic-dependencies/ ./build/lol_client --recursive --exclude "*" --include "landonline*"
+                    Start-Sleep -s 30
+                    echo "Installing the Landonline Prerequisites......"
+                    aws s3 cp s3://landonline-classic-dependencies/landonline_prerequisites_1.8.exe C:/Windows/Temp/landonline_prerequisites_1.8.exe
+                    Start-Sleep -s 30
+                    Invoke-Command -ScriptBlock {Start-Process "C:/Windows/Temp/landonline_prerequisites_1.8.exe" -ArgumentList "/q", "-i" , "silent" -Wait}
+                    Start-Sleep -s 60
+                    New-Item -Path c:\\users\\administrator\\code\\Restore-Batch -ItemType "directory"
+                    aws s3 cp s3://landonline-classic-dependencies/.ssh.zip c:\\users\\administrator\\
+                    aws s3 cp s3://landonline-classic-dependencies/clw177A.tmp c:\\users\\administrator\\AppData\\Local\\Temp\\
+                    Expand-Archive -LiteralPath C:\\Users\\Administrator\\.ssh.zip -DestinationPath C:\\Users\\Administrator\\
+                    aws s3 cp s3://landonline-classic-dependencies/alfa_3_22.bat c:\\users\\administrator\\code\\Restore-Batch\\
+                    aws s3 cp s3://landonline-classic-dependencies/Bravo_3_23.bat c:\\users\\administrator\\code\\Restore-Batch\\
+                    aws s3 cp s3://landonline-classic-dependencies/PBEnabler.bat c:\\users\\administrator\\code\\Restore-Batch\\
+                    """
+                }
+            }
+        }
+        stage('Select the Lol Client') {
+            when { expression { params.FIRST_RUN == true } }
+            steps {
+                script {
+                    def options = listOfLolInstaller()
+                    templateFileName = input(message: 'Lol Classic Automated Installation', ok: 'Next', parameters: [[$class: 'ChoiceParameterDefinition', name: 'MsiInstaller', choices: options, description: 'Please choose the Msi to be Installed']])
+                }
+            }
+        }
+        stage('Install the Lol Client') {
+            when { expression { params.FIRST_RUN == true } }
+            steps {
+                script {
+                    powershell """
+                        echo "Installing the Landonline Client ${templateFileName}......"
+                        \$pathWithArgs="/i `"$templateFileName`" /quiet"
+                        Start-Process msiexec.exe -ArgumentList \$pathWithArgs -Wait
+                        Start-Sleep -s 60
+                        echo "Updating /etc/hosts entry..................."
+                        \$hostsFilePath = "\$(\$Env:WinDir)\\system32\\Drivers\\etc\\hosts"
+                        Add-Content -Encoding UTF8  \$hostsFilePath ("144.66.238.26".PadRight(20, " ") + "devassloldbs20".PadRight(20, " ") + "kale")
+                    """
+                }
+            }
+        }
+        stage('Configuring Lol Client') {
+            when { expression { params.FIRST_RUN == true } }
+            steps {
+                script {
+                    powershell """
+                        echo "Installing dependency..."
+                        Install-PackageProvider -Name NuGet -Force
+                        Install-Module PsIni -Force
+                        echo "Importing dependency..."
+                        Import-Module PsIni
+                        echo "Configuring the Landonline Client to connect to the database: $dataBaseName onthe host: $dbHost and  port: $dataBasePort"
+                        \$Key=Test-Path "HKLM:/SOFTWARE/WOW6432Node/Informix/SqlHosts/$dataBaseName"
+                        if (\$key -ne "False") {
+                           Copy-Item -Path "HKLM:/SOFTWARE/WOW6432Node/Informix/SqlHosts/crs_prd" -Destination "HKLM:/SOFTWARE/WOW6432Node/Informix/SqlHosts/$dataBaseName"
+                        }
+                        echo "Updating the windows registry with new data base IP address..."
+                        Set-ItemProperty -path "HKLM:/SOFTWARE/WOW6432Node/Informix/SqlHosts/$dataBaseName" -name 'HOST' -value "$dbHost"
+                        Set-ItemProperty -path "HKLM:/SOFTWARE/WOW6432Node/Informix/SqlHosts/$dataBaseName" -name 'SERVICE' -value "$dataBasePort"
+                        echo "Updating clw.ini with the new database IP address ..."
+                        \$rootPath=Join-Path -Path "C:/Program Files (x86)/Land Information New Zealand/" -ChildPath *Landonline*Workspace* -Resolve
+                        \$path=Join-Path -Path \$rootPath -ChildPath "/clw.ini"
+                        \$ini=Get-IniContent \$path
+                        \$ini["WORKSPACE"]["AutoLogon"] = 'N'
+                        \$ini["INFORMIX"]["ServerName"] = "$dbHost@$dataBaseName"
+                        \$ini["INFORMIX"]["Database"] = "crsprd"
+                        echo \$ini | Out-IniFile -FilePath \$path -Force -Encoding ASCII -Pretty
+                        echo "Renaming WFAPI.DLL......................"
+                        Rename-Item -Path 'C:\\Program Files (x86)\\Land Information New Zealand\\Landonline Workspace\\wfapi.dll' wfapi-old.ddl
+                    """
+                    bat 'c:\\\\users\\\\administrator\\\\code\\\\Restore-Batch\\\\PBEnabler.bat'
+                }
+            }
+        }
+        stage('Run Tosca Test') {
+            steps {
+               powershell """
+                   echo "Downloading Test Events $FileName"
+                   aws s3 cp s3://landonline-classic-dependencies/$FileName c:\\Windows\\Temp\\
+                   echo "Executing Test Event $FileName"
+                    & 'C:\\Program Files (x86)\\TRICENTIS\\Tosca Testsuite\\ToscaCommander\\ToscaCI\\Client\\ToscaCIClient.exe' -m distributed -t junit -c C:\\Windows\\temp\\$FileName
+               """
+            }
+        }
+    }
+    post {
+        success {
+            ex_sendSlackNotification(msg:"TOSCA Pipeline has completed successfully", status:"SUCCESS")
+        }
+    }
+}
+def listOfLolInstaller() {
+    def files = []
+    def fileExtension = ['.msi']
+    for (extension in fileExtension) {
+        def temp = findFiles(glob: "**/lol_client/*${extension}")
+        files  << temp
+    }
+    def choices = files.flatten()
+    return choices
+}
+def getSlackToken() {
+    ex_withSTEPParamStore(path:'/LINZ/STEP/DBSquad/') {
+        return SLACK_TOKEN
+    }
+}
