@@ -4,7 +4,7 @@ def dataBasePort
 def dataBaseName
 pipeline {
     agent {
-        label 'windows-tosca-db-worker'
+        label 'DB_Worker'
     }
     options {
         ansiColor('xterm')
