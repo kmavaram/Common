@@ -36,7 +36,7 @@ pipeline {
                             dataBaseName = "alfa";
                             dataBasePort = "12509";
                     }
-                    switch(params.TestEventNumber) {
+                    switch(params.TestEvent) {
                         case 'TestEvent1':
                             FileName = "EC2-DMAUTOREG-HP_3_22.xml";
                         case 'TestEvent2':
