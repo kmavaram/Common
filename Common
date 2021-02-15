@@ -12,7 +12,7 @@ pipeline {
     parameters {
         choice(choices: ['Bravo', 'Delta', 'Golf', 'Alfa'], description: 'Please pick the Database you\'d like the be connected to the Lol Classic Client', name: 'DbName')
         booleanParam(defaultValue: false, description: 'Setup for first run', name: 'FIRST_RUN')
-        choice(choices: ['TestEvent1', 'TestEvent2'], description: 'Pick the Test Event number to execute' , name: 'TestEventNumber')
+        choice(choices: ['TestEvent1', 'TestEvent2'], description: 'Pick the Test Event number to execute' , name: 'TestEvent')
     }
     environment {
         SLACK_TOKEN = getSlackToken()
